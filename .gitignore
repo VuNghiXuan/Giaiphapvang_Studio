@@ -1,0 +1,48 @@
+# 1. BẢO MẬT (QUAN TRỌNG)
+.env
+*.env
+keys.json
+
+# 2. FILE MEDIA (VIDEO & AUDIO) - CHẶN HẾT CHO SẠCH
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.mp3
+*.wav
+*.m4a
+*.flac
+
+# 3. THƯ MỤC CHỨA DỮ LIỆU TẠM & OUTPUT
+workspace/
+outputs/
+temp_audio/
+storage/
+data/
+assets/temp/
+
+# 4. MÔI TRƯỜNG ẢO (VIRTUAL ENV)
+venv/
+.venv/
+env/
+bin/
+lib/
+
+# 5. PYTHON RÁC & CACHES
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+.python-version
+
+# 6. IDE & HỆ THỐNG
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 7. BUILD & EXE
+build/
+dist/
+*.exe
+*.spec
