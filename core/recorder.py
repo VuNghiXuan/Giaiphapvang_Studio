@@ -3,162 +3,92 @@ import numpy as np
 import mss
 import pyaudio
 import wave
-# import threading
-# import os
-import time
-import keyboard
-import time
-import streamlit as st
+import threading
 import os
-import pyautogui
-
-
+import time
+import tkinter as tk
+from threading import Thread
 
 class ScreenRecorder:
     def __init__(self):
-        # Đảm bảo thư mục lưu video tồn tại
-        if not os.path.exists("exports/videos"):
-            os.makedirs("exports/videos")
-
-    def start_recording(self, output_path, fps=20.0, resolution=(1920, 1080)):
-        """
-        Quay màn hình: Dùng phím Pause để Start/Stop.
-        Đã gia cố để tránh lỗi truyền nhầm tham số.
-        """
-        out = None
-        try:
-            # 1. BẢO VỆ ÉP KIỂU FPS (Chống lỗi 'could not convert string to float')
-            try:
-                fps_float = float(fps)
-            except (ValueError, TypeError):
-                # Nếu Vũ truyền nhầm path file vào đây, mặc định lấy 20.0
-                print(f"⚠️ Cảnh báo: FPS truyền vào không phải số ({fps}). Tự động dùng 20.0")
-                fps_float = 20.0
-            
-            # 2. XỬ LÝ ĐỘ PHÂN GIẢI
-            if resolution is None or isinstance(resolution, str):
-                w, h = pyautogui.size()
-            else:
-                w, h = int(resolution[0]), int(resolution[1])
-            
-            screen_size = (w, h)
-
-            # 3. KHỞI TẠO VIDEOWRITER
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            out = cv2.VideoWriter(output_path, fourcc, fps_float, screen_size)
-
-            if not out.isOpened():
-                st.error("❌ Không thể khởi tạo VideoWriter. Kiểm tra đường dẫn file hoặc quyền Admin.")
-                return
-
-            st.info("🎯 **SẴN SÀNG!**\n1. Mở phần mềm Tiệm Vàng lên.\n2. Nhấn phím **'Pause'** (trên bàn phím) để BẮT ĐẦU.")
-            
-            # Chờ nhấn Pause lần 1
-            keyboard.wait('pause')
-            time.sleep(0.5) # Chống dính phím
-            
-            is_recording = True
-            print(f"🔴 ĐANG QUAY MÀN HÌNH: {output_path}")
-            
-            # 4. VÒNG LẶP GHI HÌNH
-            while is_recording:
-                # Chụp màn hình
-                img = pyautogui.screenshot()
-                
-                # Chuyển đổi định dạng ảnh cho OpenCV
-                frame = np.array(img)
-                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                
-                # Ép đúng kích cỡ để không bị lỗi 'Bad argument'
-                if frame.shape[1] != w or frame.shape[0] != h:
-                    frame = cv2.resize(frame, screen_size)
-
-                # Ghi frame
-                out.write(frame)
-
-                # Kiểm tra nhấn Pause lần 2 để dừng
-                if keyboard.is_pressed('pause'):
-                    is_recording = False
-                    time.sleep(0.5)
-                    break
-                    
-        except Exception as e:
-            st.error(f"❌ Lỗi Recording: {e}")
-            print(f"❌ Lỗi Recording: {e}")
-        
-        finally:
-            # Giải phóng tài nguyên
-            if out is not None:
-                out.release()
-            cv2.destroyAllWindows()
-            print("⬜ ĐÃ DỪNG VÀ LƯU VIDEO THÀNH CÔNG.")
-            
-        st.success(f"✅ Video đã lưu tại: {output_path}")
-
-    def stop_recording(self):
-        print(f"\n--- [STOP] Đang yêu cầu dừng quay... ---")
         self.recording = False
-        if hasattr(self, 'video_thread'): self.video_thread.join()
-        if hasattr(self, 'audio_thread'): self.audio_thread.join()
-        print("--- [SUCCESS] Đã dừng và lưu tất cả các file thành công ---\n")
+        self.paused = False
+        self.finished = False  # Trạng thái để Streamlit biết khi nào cần nhảy Tab
+        self.video_thread = None
+        self.audio_thread = None
+        self.root_control = None 
+        self.fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        os.makedirs("workspace", exist_ok=True)
+        print("[DEBUG-CORE] 🛠️ Đã khởi tạo ScreenRecorder Engine.")
+
+    def start_recording(self, output_path, fps=20.0, resolution=(1920, 1080), stop_hotkey="ctrl+q"):
+        if self.recording: 
+            print("[DEBUG-CORE] ⚠️ Cảnh báo: Lệnh quay bị bỏ qua vì đang trong quá trình ghi.")
+            return
+        
+        self.recording = True
+        self.paused = False
+        self.finished = False # Reset trạng thái kết thúc
+        self.fps = float(fps)
+        self.resolution = resolution
+        self.audio_path = output_path.replace(".mp4", ".wav")
+        self.video_path = output_path
+
+        print(f"[DEBUG-CORE] 🎬 Bắt đầu luồng ghi hình: {self.video_path} | FPS: {self.fps}")
+        
+        self.video_thread = threading.Thread(target=self._record_video, args=(self.video_path,), daemon=True)
+        self.audio_thread = threading.Thread(target=self._record_audio, args=(self.audio_path,), daemon=True)
+        
+        self.video_thread.start()
+        self.audio_thread.start()
+        print("[DEBUG-CORE] ✅ Cả 2 luồng Video & Audio đã kích hoạt thành công.")
 
     def _record_video(self, path):
-        print(f"--- [VIDEO] Luồng Video bắt đầu chạy ---")
+        print(f"[DEBUG-VIDEO] 📽️ Luồng Video bắt đầu ghi vào file...")
         try:
             with mss.mss() as sct:
-                monitor = sct.monitors[1] 
-                width = monitor["width"]
-                height = monitor["height"]
-                print(f"--- [VIDEO] Nhận diện màn hình: {width}x{height} ---")
-                
-                path_avi = path.replace(".mp4", ".avi")
-                out = cv2.VideoWriter(path_avi, self.fourcc, self.fps, (width, height))
-                
-                if not out.isOpened():
-                    print("--- [ERROR] Không thể mở VideoWriter (XVID). Kiểm tra đường dẫn hoặc quyền ghi file! ---")
-                    return
-
-                count = 0
+                monitor = sct.monitors[1]
+                out = cv2.VideoWriter(path, self.fourcc, self.fps, self.resolution)
                 last_time = time.time()
+                frame_count = 0
+                
                 while self.recording:
-                    # Chụp hình
-                    img = np.array(sct.grab(monitor))
-                    frame = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+                    if self.paused:
+                        time.sleep(0.1)
+                        continue
+                        
+                    sct_img = sct.grab(monitor)
+                    frame = np.array(sct_img)
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
                     
-                    # Ghi hình
+                    if (frame.shape[1], frame.shape[0]) != self.resolution:
+                        frame = cv2.resize(frame, self.resolution)
+                    
                     out.write(frame)
+                    frame_count += 1
                     
-                    count += 1
-                    if count % 20 == 0:
-                        print(f"--- [VIDEO] Đang ghi hình... Frame: {count} ---")
-                    
-                    # Giữ nhịp FPS
-                    time_to_wait = (1.0 / self.fps) - (time.time() - last_time)
-                    if time_to_wait > 0:
-                        time.sleep(time_to_wait)
+                    if frame_count % 100 == 0:
+                        print(f"[DEBUG-VIDEO] 🎞️ Đã ghi {frame_count} frames...")
+
+                    wait_time = (1.0 / self.fps) - (time.time() - last_time)
+                    if wait_time > 0: time.sleep(wait_time)
                     last_time = time.time()
                 
                 out.release()
-                print(f"--- [VIDEO] Đã đóng file Video: {path_avi} ---")
-        except Exception as e:
-            print(f"--- [VIDEO ERROR] Lỗi trong lúc ghi hình: {e} ---")
+                print(f"[DEBUG-VIDEO] 💾 Đã đóng file Video. Tổng số frame: {frame_count}")
+        except Exception as e: 
+            print(f"[DEBUG-VIDEO] ❌ Lỗi Video: {e}")
 
     def _record_audio(self, path):
-        print(f"--- [AUDIO] Luồng Audio bắt đầu chạy ---")
+        print(f"[DEBUG-AUDIO] 🎙️ Luồng Audio bắt đầu thu âm...")
         p = pyaudio.PyAudio()
         try:
-            # Kiểm tra xem có thiết bị input không
-            try:
-                device_info = p.get_default_input_device_info()
-                print(f"--- [AUDIO] Đang dùng Mic: {device_info['name']} ---")
-            except:
-                print("--- [AUDIO ERROR] Không tìm thấy Micro! ---")
-                return
-
             stream = p.open(format=pyaudio.paInt16, channels=1, rate=44100, input=True, frames_per_buffer=1024)
             frames = []
-            
             while self.recording:
+                if self.paused:
+                    time.sleep(0.1)
+                    continue
                 data = stream.read(1024, exception_on_overflow=False)
                 frames.append(data)
             
@@ -171,8 +101,92 @@ class ScreenRecorder:
             wf.setframerate(44100)
             wf.writeframes(b''.join(frames))
             wf.close()
-            print(f"--- [AUDIO] Đã đóng file Audio: {path} ---")
-        except Exception as e:
-            print(f"--- [AUDIO ERROR] Lỗi Mic: {e} ---")
-        finally:
+            print(f"[DEBUG-AUDIO] 💾 Đã lưu file Audio thành công: {path}")
+        except Exception as e: 
+            print(f"[DEBUG-AUDIO] ❌ Lỗi Audio: {e}")
+        finally: 
             p.terminate()
+
+    def stop_recording(self):
+        print("[DEBUG-CORE] 🛑 Nhận lệnh STOP ghi hình.")
+        self.recording = False
+        self.paused = False
+        self.finished = True # Đánh dấu hoàn tất để GUI bắt được tín hiệu nhảy Tab
+        
+        if self.root_control:
+            try:
+                print("[DEBUG-TK] 🧹 Đang đóng cửa sổ điều khiển Tkinter...")
+                # Sử dụng after để đảm bảo lệnh destroy chạy trong main thread của Tkinter
+                self.root_control.after(0, self.root_control.destroy)
+                self.root_control = None
+            except Exception as e:
+                print(f"[DEBUG-TK] ⚠️ Lỗi khi đóng Tkinter: {e}")
+
+    def toggle_pause(self):
+        self.paused = not self.paused
+        state = "TẠM DỪNG" if self.paused else "TIẾP TỤC QUAY"
+        print(f"[DEBUG-CORE] ⏸️ Trạng thái: {state}")
+        return self.paused
+
+    def show_floating_control(self, output_path, fps, resolution, hotkey):
+        def create_window():
+            print("[DEBUG-TK] 🖥️ Khởi tạo cửa sổ điều khiển nổi...")
+            root = tk.Tk()
+            self.root_control = root
+            root.attributes("-topmost", True)
+            root.overrideredirect(True)
+            root.attributes("-alpha", 0.95)
+            
+            w, h = 220, 70
+            root.geometry(f"{w}x{h}+{root.winfo_screenwidth()-(w+20)}+{root.winfo_screenheight()-(h+70)}")
+
+            main_frame = tk.Frame(root, bg="#1E1E1E", bd=2, relief="raised")
+            main_frame.pack(fill=tk.BOTH, expand=True)
+
+            status_label = tk.Label(main_frame, text="SẴN SÀNG", fg="#00FF00", bg="#1E1E1E", font=("Arial", 8, "bold"))
+            status_label.pack(pady=2)
+
+            btn_frame = tk.Frame(main_frame, bg="#1E1E1E")
+            btn_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=2)
+
+            def start_action():
+                print("[DEBUG-TK] 🖱️ Click START.")
+                self.start_recording(output_path, fps, resolution, hotkey)
+                btn_start.pack_forget()
+                btn_pause.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=2)
+                btn_stop.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=2)
+                status_label.config(text="● ĐANG QUAY...", fg="#FF4B4B")
+
+            def pause_action():
+                print("[DEBUG-TK] 🖱️ Click PAUSE/RESUME.")
+                is_paused = self.toggle_pause()
+                if is_paused:
+                    btn_pause.config(text="▶ TIẾP TỤC", bg="#E69400")
+                    status_label.config(text="⏸ ĐANG TẠM DỪNG", fg="#E69400")
+                else:
+                    btn_pause.config(text="⏸ TẠM DỪNG", bg="#262730")
+                    status_label.config(text="● ĐANG QUAY...", fg="#FF4B4B")
+
+            def stop_action():
+                print("[DEBUG-TK] 🖱️ Click STOP.")
+                self.stop_recording()
+
+            btn_start = tk.Button(btn_frame, text="🔴 BẮT ĐẦU QUAY", bg="#4CAF50", fg="white", 
+                                 font=("Arial", 9, "bold"), command=start_action, bd=0)
+            btn_start.pack(fill=tk.BOTH, expand=True)
+
+            btn_pause = tk.Button(btn_frame, text="⏸ TẠM DỪNG", bg="#262730", fg="white", 
+                                 font=("Arial", 8, "bold"), command=pause_action, bd=0)
+            btn_stop = tk.Button(btn_frame, text="⏹ STOP", bg="#FF4B4B", fg="white", 
+                                font=("Arial", 8, "bold"), command=stop_action, bd=0)
+
+            # Logic kéo thả
+            def start_move(event): root.x, root.y = event.x, event.y
+            def stop_move(event): root.geometry(f"+{event.x_root - root.x}+{event.y_root - root.y}")
+            main_frame.bind("<Button-1>", start_move)
+            main_frame.bind("<B1-Motion>", stop_move)
+
+            print("[DEBUG-TK] 🚀 Cửa sổ Tkinter chính thức chạy mainloop.")
+            root.mainloop()
+
+        Thread(target=create_window, daemon=True).start()

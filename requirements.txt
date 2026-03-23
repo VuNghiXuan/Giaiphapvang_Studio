@@ -16,6 +16,7 @@ click==8.3.1
 colorama==0.4.6
 cryptography==46.0.5
 ctranslate2==4.7.1
+decorator==5.2.1
 distro==1.9.0
 edge-tts==7.2.7
 faster-whisper==1.2.1
@@ -43,6 +44,8 @@ httplib2==0.31.2
 httpx==0.28.1
 huggingface_hub==1.7.2
 idna==3.11
+ImageIO==2.37.3
+imageio-ffmpeg==0.6.0
 Jinja2==3.1.6
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
@@ -51,6 +54,7 @@ markdown-it-py==4.0.0
 MarkupSafe==3.0.3
 mdurl==0.1.2
 MouseInfo==0.1.3
+moviepy==2.2.1
 mpmath==1.3.0
 mss==10.1.0
 multidict==6.7.1
@@ -60,7 +64,8 @@ onnxruntime==1.24.4
 opencv-python==4.13.0.92
 packaging==26.0
 pandas==2.3.3
-pillow==12.1.1
+pillow==11.3.0
+proglog==0.1.12
 propcache==0.4.1
 proto-plus==1.27.1
 protobuf==5.29.6
@@ -94,6 +99,8 @@ six==1.17.0
 smmap==5.0.3
 sniffio==1.3.1
 streamlit==1.55.0
+streamlit-autorefresh==1.0.1
+streamlit-option-menu==0.4.0
 sympy==1.14.0
 tabulate==0.10.0
 tenacity==9.1.4
