@@ -3,6 +3,7 @@ import os
 from dotenv import load_dotenv
 from streamlit_option_menu import option_menu
 import time
+import json
 
 # 0. Cấu hình hệ thống
 load_dotenv()
@@ -69,6 +70,20 @@ ai_studio = get_ai_manager()
 
 # --- 1. SIDEBAR ---
 with st.sidebar:
+    # CẤU HÌNH GIỌNG ĐỌC
+    st.markdown("### 🎙️ Cấu hình Giọng đọc")
+    # Định nghĩa trực tiếp danh sách giọng ở đây cho tiện
+    VOICE_OPTIONS = {
+        "Hoài My (Sang trọng)": "vi-VN-HoaiMyNeural",
+        "Nam Minh (Trầm ấm)": "vi-VN-NamMinhNeural",
+        "Thành Lung (Trẻ trung)": "vi-VN-ThanhLungNeural"
+    }
+    
+    selected_voice_label = st.selectbox("Giọng AI:", list(VOICE_OPTIONS.keys()))
+    # Lưu vào session_state để dùng xuyên suốt các tab
+    st.session_state.selected_voice_id = VOICE_OPTIONS[selected_voice_label]
+
+    # CẤU HÌNH BỘ NÃO
     st.markdown("### ⚙️ Cấu hình")
     providers = ["Groq", "Gemini", "Ollama"]
     
@@ -166,78 +181,11 @@ if selected == titles[0]:
         """)
 
 elif selected == titles[1]:
-    st.subheader("✍️ Trình biên tập nội dung AI (Theo Timeline)")
-    video_raw = "workspace/raw_video.mp4"
-    audio_raw = "workspace/raw_video.wav" # Ưu tiên file wav thu từ mic
+    # Gọi trực tiếp hàm từ editor_gui.py
+    from gui.editor_gui import render_editor
     
-    if os.path.exists(video_raw):
-        col_v, col_e = st.columns([1, 1])
-        with col_v:
-            st.video(video_raw)
-            st.caption("Bản quay màn hình thô")
-        
-        with col_e:
-            st.markdown("#### 🚀 Quy trình xử lý khớp lệnh")
-            
-            # --- BƯỚC 1: TRÍCH XUẤT THEO TIMELINE ---
-            if st.button("🎙️ 1. Phân tích Timeline & Biên tập", use_container_width=True):
-                with st.spinner("🤖 AI đang phân tích từng giây mày nói..."):
-                    # 1. Gọi Whisper lấy segments (mốc thời gian)
-                    # Nếu có file wav thì dùng wav, không thì dùng mp4
-                    path_to_listen = audio_raw if os.path.exists(audio_raw) else video_raw
-                    raw_segments = ai_studio.transcribe_with_segments(path_to_listen)
-                    
-                    if raw_segments:
-                        # 2. Gọi AI Rewrite dựa trên kiến thức hệ thống và mốc thời gian
-                        refined_segments = ai_studio.rewrite_segments(raw_segments)
-                        st.session_state.script_segments = refined_segments
-                        st.success("Đã phân tích xong Timeline!")
-                    else:
-                        st.error("Không nghe thấy lời thoại nào trong video!")
-
-            # --- BƯỚC 2: HIỂN THỊ Ô CHỈNH SỬA THEO ĐOẠN ---
-            if 'script_segments' in st.session_state and st.session_state.script_segments:
-                st.markdown("---")
-                st.write("📝 **Hiệu chỉnh lời thoại (Khớp theo giây):**")
-                
-                updated_segments = []
-                # Hiển thị từng đoạn để user sửa
-                for i, seg in enumerate(st.session_state.script_segments):
-                    with st.expander(f"Đoạn {i+1}: {seg['start']}s -> {seg['end']}s", expanded=True):
-                        c1, c2 = st.columns([1, 4])
-                        with c1:
-                            # Cho phép sửa nhẹ mốc thời gian nếu muốn
-                            new_start = st.number_input("Bắt đầu", value=float(seg['start']), key=f"s_{i}", step=0.1)
-                            new_end = st.number_input("Kết thúc", value=float(seg['end']), key=f"e_{i}", step=0.1)
-                        with c2:
-                            new_text = st.text_area("Lời thoại AI đề xuất", value=seg['text'], key=f"t_{i}", height=100)
-                        
-                        updated_segments.append({"start": new_start, "end": new_end, "text": new_text})
-                
-                # Lưu lại dữ liệu đã sửa vào session_state
-                st.session_state.script_segments = updated_segments
-
-                st.markdown("---")
-                # --- BƯỚC 3: RENDER VIDEO CUỐI CÙNG ---
-                if st.button("🎬 2. Xuất video thành phẩm", type="primary", use_container_width=True):
-                    with st.spinner("🎬 Đang lồng ghép audio vào đúng Timeline..."):
-                        output_path = f"outputs/final_{int(time.time())}.mp4"
-                        
-                        # Gọi hàm render theo từng segment
-                        success = ai_studio.export_final_video(
-                            video_path=video_raw, 
-                            script_segments=st.session_state.script_segments, 
-                            output_path=output_path
-                        )
-                        
-                        if success:
-                            st.balloons()
-                            st.success(f"Đã xuất bản: {output_path}")
-                            st.video(output_path)
-                        else:
-                            st.error("Lỗi trong quá trình trộn audio vào Timeline!")
-    else:
-        st.warning("Chưa có video thô. Hãy quay phim ở tab đầu tiên.")
+    # Truyền ai_studio vào để nó dùng AI rewrite
+    render_editor(ai_studio)
 
 elif selected == titles[2]:
     st.subheader("📦 Kho thành phẩm")

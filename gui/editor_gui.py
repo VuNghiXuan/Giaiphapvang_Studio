@@ -4,124 +4,127 @@ import asyncio
 import edge_tts
 import subprocess
 import time
+import json
+from datetime import datetime
 
-async def generate_voice(text, output_path):
-    # Giọng Hoài My cực kỳ sang và rõ cho ngành vàng bạc
-    voice = "vi-VN-HoaiMyNeural"
-    # Tăng tốc độ nói lên một chút (10%) để nghe chuyên nghiệp hơn
-    communicate = edge_tts.Communicate(text, voice, rate="+10%")
+# Import các hàm từ file scripts.py
+from core.scripts import get_list_scripts, save_script_to_file
+
+async def generate_voice(text, output_path, voice_id):
+    # Fix giọng: Bỏ pitch -5Hz để hết uốn éo, nghe rõ ràng hơn
+    communicate = edge_tts.Communicate(text, voice_id, rate="+0%")
     await communicate.save(output_path)
 
 def render_editor(ai_studio):
     st.divider()
     st.header("🎬 TRẠM BIÊN TẬP & LỒNG TIẾNG AI")
     
-    # 1. KHỞI TẠO ĐƯỜNG DẪN (Đồng bộ với Tab Recorder)
     workspace = "workspace"
-    outputs = "outputs"
-    os.makedirs(workspace, exist_ok=True)
-    os.makedirs(outputs, exist_ok=True)
+    video_raw = os.path.join(workspace, "raw_video.mp4")
+    selected_voice_id = st.session_state.get('selected_voice_id', "vi-VN-NamMinhNeural")
 
-    # Kiểm tra cả 2 định dạng file quay màn hình có thể có
-    video_raw_mp4 = os.path.join(workspace, "raw_video.mp4")
-    video_raw_avi = os.path.join(workspace, "raw_video.avi")
-    
-    upload_path = os.path.join(workspace, "input_video.mp4")
-    audio_ai_path = os.path.abspath(os.path.join(workspace, "voice_ai.mp3"))
-    output_video = os.path.abspath(os.path.join(outputs, "Giaiphapvang_Tutorial.mp4"))
-
-    col1, col2 = st.columns(2)
-    video_input = None
-
-    # --- CỘT 1: QUẢN LÝ VIDEO ---
-    with col1:
-        st.subheader("📺 Bước 1: Chọn Video")
-        uploaded_file = st.file_uploader("Hoặc Upload video mới (.mp4)", type=["mp4"])
-        
-        if uploaded_file:
-            video_input = upload_path
-            with open(video_input, "wb") as f:
-                f.write(uploaded_file.read())
-        elif os.path.exists(video_raw_mp4):
-            video_input = video_raw_mp4
-            st.success("✅ Đang dùng bản quay màn hình (.mp4)")
-        elif os.path.exists(video_raw_avi):
-            video_input = video_raw_avi
-            st.info("✅ Đang dùng bản quay màn hình (.avi)")
-
-        if video_input:
-            # Hiển thị preview (Chỉ hiển thị được MP4 trên web)
-            if video_input.endswith('.avi'):
-                st.warning("⚠️ File AVI không xem trước được. AI sẽ tự chuyển sang MP4 khi Render.")
-            else:
-                st.video(video_input)
-
-    # --- CỘT 2: QUẢN LÝ LỜI THOẠI ---
-    with col2:
-        st.subheader("✍️ Bước 2: Chuốt lời thoại")
-        default_raw = st.session_state.get('raw_voice_input', "")
-        raw_voice = st.text_area("Lời thoại nháp (Bạn nói lúc quay):", value=default_raw, height=150)
-        
-        if st.button("🪄 AI BIÊN SOẠN CHUYÊN NGHIỆP", use_container_width=True):
-            if raw_voice:
-                with st.spinner("AI đang mông má kịch bản..."):
-                    # Gọi hàm rewrite từ AIManager (nhớ truyền context nếu cần)
-                    st.session_state['refined_text'] = ai_studio.rewrite_script(raw_voice)
-                    st.rerun()
-            else:
-                st.error("Mày chưa nhập lời thoại nháp kìa Vũ!")
-
-    # --- BƯỚC 3: RENDER THÀNH PHẨM ---
-    if 'refined_text' in st.session_state:
-        st.divider()
-        st.subheader("🚀 Bước 3: Xuất Video Thành Phẩm")
-        
+    # --- KHU VỰC 1: CHỌN KỊCH BẢN ---
+    with st.expander("📂 KHO KỊCH BẢN", expanded=True):
+        saved_scripts = get_list_scripts()
+        # Thêm biến session để quản lý tên file đang mở
         c1, c2 = st.columns([2, 1])
         with c1:
-            edited_text = st.text_area("Kịch bản cuối cùng (Hoài My sẽ đọc):", 
-                                      value=st.session_state['refined_text'], height=150)
-        with c2:
-            st.info("💡 Mẹo: Giọng AI sẽ đè lên toàn bộ âm thanh cũ của video.")
+            selected_script = st.selectbox("Chọn kịch bản:", ["-- Tạo bản mới --"] + saved_scripts)
+        
+        if selected_script != "-- Tạo bản mới --":
+            if st.session_state.get('last_selected_file') != selected_script:
+                script_path = f"workspace/scripts/{selected_script}.json"
+                if os.path.exists(script_path):
+                    with open(script_path, 'r', encoding='utf-8') as f:
+                        saved_data = json.load(f)
+                        if 'segments' in saved_data:
+                            st.session_state.script_segments = saved_data['segments']
+                        st.session_state.last_selected_file = selected_script
+                        st.session_state.current_script_name = selected_script
+        else:
+            if st.session_state.get('last_selected_file') != "-- Tạo bản mới --":
+                st.session_state.script_segments = []
+                st.session_state.last_selected_file = "-- Tạo bản mới --"
+                st.session_state.current_script_name = ""
+
+    # --- KHU VỰC 2: TIMELINE BIÊN TẬP ---
+    if os.path.exists(video_raw) or st.session_state.get('script_segments'):
+        col_v, col_e = st.columns([1, 1.2])
+        
+        with col_v:
+            if os.path.exists(video_raw):
+                st.video(video_raw)
+            st.info(f"🎙️ Giọng: {selected_voice_id}")
             
-            if st.button("🔥 BẮT ĐẦU RENDER", type="primary", use_container_width=True):
-                if not video_input:
-                    st.error("Thiếu video đầu vào!")
-                else:
-                    with st.spinner("⚡ Đang lồng tiếng và nén video..."):
-                        # Xử lý file cũ
-                        if os.path.exists(output_video):
-                            try: os.remove(output_video)
-                            except: pass
+            if st.button("🎙️ AI TỰ SOẠN TIMELINE MỚI", use_container_width=True):
+                with st.spinner("AI đang nghe..."):
+                    raw_segments = ai_studio.transcribe_with_segments(video_raw)
+                    if raw_segments:
+                        st.session_state.script_segments = ai_studio.rewrite_segments(raw_segments)
+                        st.rerun()
 
-                        # 1. Tạo voice AI (Chạy async trong sync)
-                        asyncio.run(generate_voice(edited_text, audio_ai_path))
+        with col_e:
+            if 'script_segments' in st.session_state and st.session_state.script_segments:
+                st.subheader("📝 Hiệu chỉnh Timeline")
+                
+                # Hàm xử lý Ripple Edit (Cộng dồn thời gian)
+                def adjust_timeline(index, offset):
+                    for i in range(index, len(st.session_state.script_segments)):
+                        st.session_state.script_segments[i]['start'] = round(st.session_state.script_segments[i]['start'] + offset, 2)
+                        st.session_state.script_segments[i]['end'] = round(st.session_state.script_segments[i]['end'] + offset, 2)
 
-                        # 2. Lệnh FFMPEG (Dùng đường dẫn tuyệt đối để tránh lỗi Windows)
-                        v_in = os.path.abspath(video_input)
-                        a_in = os.path.abspath(audio_ai_path)
-                        v_out = os.path.abspath(output_video)
+                # Duyệt danh sách segments
+                for i, seg in enumerate(st.session_state.script_segments):
+                    with st.container(border=True):
+                        # Dòng 1: Điều khiển thời gian
+                        tc1, tc2, tc3, tc4 = st.columns([1.5, 1, 1, 2])
+                        with tc1:
+                            st.markdown(f"**Đoạn {i+1}: {seg['start']}s**")
+                        with tc2:
+                            if st.button("➕", key=f"plus_{i}"):
+                                adjust_timeline(i, 0.5) # Tăng 0.5s từ đoạn này về sau
+                                st.rerun()
+                        with tc3:
+                            if st.button("➖", key=f"minus_{i}"):
+                                adjust_timeline(i, -0.5) # Giảm 0.5s từ đoạn này về sau
+                                st.rerun()
+                        with tc4:
+                            # Cho phép sửa tay chính xác start/end
+                            seg['start'] = st.number_input("Start", value=float(seg['start']), key=f"start_{i}", step=0.1, label_visibility="collapsed")
 
-                        cmd = [
-                            'ffmpeg', '-y', 
-                            '-i', v_in,
-                            '-i', a_in,
-                            '-c:v', 'libx264', 
-                            '-preset', 'ultrafast',
-                            '-crf', '23',
-                            '-pix_fmt', 'yuv420p',
-                            '-map', '0:v:0', # Lấy hình video gốc
-                            '-map', '1:a:0', # Lấy tiếng AI
-                            '-shortest',     # Kết thúc khi 1 trong 2 hết
-                            v_out
-                        ]
-                        
-                        result = subprocess.run(cmd, capture_output=True, text=True)
-                        
-                        if result.returncode == 0:
+                        # Dòng 2: Sửa lời thoại
+                        seg['text'] = st.text_area("Lời thoại", value=seg['text'], key=f"text_{i}", height=80, label_visibility="collapsed")
+
+                st.divider()
+                
+                # NÚT LƯU THÔNG MINH
+                c_s1, c_s2 = st.columns([2, 1])
+                with c_s1:
+                    save_name = st.text_input("Tên file lưu:", value=st.session_state.get('current_script_name', ""), placeholder="Ban_huong_dan_moi")
+                with c_s2:
+                    if st.button("💾 LƯU LẠI", use_container_width=True, type="secondary"):
+                        if save_name:
+                            save_script_to_file(st.session_state.script_segments, save_name)
+                            st.success("Đã lưu!")
+                            time.sleep(0.5)
+                            st.rerun()
+                
+                # NÚT XUẤT VIDEO
+                if st.button("🎬 XUẤT VIDEO THÀNH PHẨM", type="primary", use_container_width=True):
+                    with st.spinner("⚡ Đang render..."):
+                        out_file = f"outputs/Final_{int(time.time())}.mp4"
+                        success = ai_studio.export_final_video(
+                            video_path=video_raw,
+                            script_segments=st.session_state.script_segments,
+                            output_path=out_file,
+                            voice_id=selected_voice_id
+                        )
+                        if success:
                             st.balloons()
-                            st.success("🎉 XONG RỒI VŨ ƠI!")
-                            st.video(v_out)
-                            with open(v_out, "rb") as file:
-                                st.download_button("📥 TẢI VIDEO VỀ MÁY", file, file_name="Giaiphapvang_Final.mp4")
-                        else:
-                            st.error(f"Lỗi FFmpeg: {result.stderr}")
+                            st.video(out_file)
+                            with open(out_file, "rb") as f:
+                                st.download_button("📥 TẢI VỀ", f, file_name="Video_Thanh_Pham.mp4")
+            else:
+                st.info("Chưa có kịch bản. Hãy chọn kịch bản cũ hoặc bấm 'AI TỰ SOẠN' bên trái.")
+    else:
+        st.warning("Mày chưa có video thô. Hãy quay ở Tab 1.")

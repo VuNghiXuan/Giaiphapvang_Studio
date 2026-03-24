@@ -8,10 +8,20 @@ from groq import Groq
 from google import genai
 from dotenv import load_dotenv
 from faster_whisper import WhisperModel
-from moviepy import VideoFileClip, AudioFileClip, CompositeAudioClip, vfx
+# from moviepy import VideoFileClip, AudioFileClip, CompositeAudioClip, vfx
 # import moviepy.video.fx.all as vfx
 from core.knowledge_base import KnowledgeBase
 import unicodedata
+import nest_asyncio
+import uuid
+
+try:
+    from moviepy.editor import VideoFileClip, AudioFileClip, CompositeAudioClip
+    import moviepy.video.fx.all as vfx
+except ImportError:
+    # Nếu bản 2.0+ hoặc lỗi đường dẫn editor
+    from moviepy import VideoFileClip, AudioFileClip, CompositeAudioClip
+    import moviepy.video.fx as vfx
 
 # Load biến môi trường
 load_dotenv()
@@ -38,29 +48,97 @@ class AIManager:
         text = " ".join(text.split()).strip()
         return text
 
+    # def transcribe_with_segments(self, input_path):
+    #     """Bóc băng kèm mốc thời gian (Timestamp)"""
+    #     if not os.path.exists(input_path):
+    #         print(f"❌ Không tìm thấy file để bóc băng: {input_path}")
+    #         return []
+        
+    #     print(f"[DEBUG-WHISPER] Đang phân tích Timeline: {input_path}")
+    #     try:
+    #         # Dùng model base để tốc độ xử lý nhanh trên CPU
+    #         model = WhisperModel("base", device="cpu", compute_type="int8") 
+    #         segments, _ = model.transcribe(input_path, beam_size=5, language="vi")
+            
+    #         results = []
+    #         for s in segments:
+    #             if len(s.text.strip()) > 1: # Bỏ qua âm thanh rác
+    #                 results.append({
+    #                     "start": round(s.start, 2),
+    #                     "end": round(s.end, 2),
+    #                     "text": s.text.strip()
+    #                 })
+    #         return results
+    #     except Exception as e:
+    #         print(f"❌ Lỗi Whisper: {e}")
+    #         return []
+
     def transcribe_with_segments(self, input_path):
-        """Bóc băng kèm mốc thời gian (Timestamp)"""
-        if not os.path.exists(input_path):
-            print(f"❌ Không tìm thấy file để bóc băng: {input_path}")
+        """
+        Bóc băng kèm mốc thời gian (Timestamp)
+        Fix lỗi: tuple index out of range bằng cách ưu tiên file .wav và ép kiểu list.
+        """
+        # 1. KIỂM TRA FILE VÀ ƯU TIÊN FILE .WAV (Để tránh lỗi codec trong MP4)
+        # Nếu đầu vào là .mp4, thử tìm file .wav cùng tên trong thư mục
+        path_to_process = input_path
+        if input_path.endswith(".mp4"):
+            wav_path = input_path.replace(".mp4", ".wav")
+            if os.path.exists(wav_path):
+                path_to_process = wav_path
+                print(f"[DEBUG-WHISPER] Phát hiện file WAV, ưu tiên dùng: {path_to_process}")
+
+        if not os.path.exists(path_to_process):
+            print(f"❌ Không tìm thấy file để bóc băng: {path_to_process}")
             return []
         
-        print(f"[DEBUG-WHISPER] Đang phân tích Timeline: {input_path}")
+        # Kiểm tra size file, nếu 0 byte thì nghỉ khỏe
+        if os.path.getsize(path_to_process) == 0:
+            print(f"⚠️ File bị rỗng (0 bytes): {path_to_process}")
+            return []
+
+        print(f"[DEBUG-WHISPER] Đang phân tích Timeline: {path_to_process}")
+        
         try:
-            # Dùng model base để tốc độ xử lý nhanh trên CPU
-            model = WhisperModel("base", device="cpu", compute_type="int8") 
-            segments, _ = model.transcribe(input_path, beam_size=5, language="vi")
+            # 2. KHỞI TẠO MODEL (Nên để model này làm biến static của class để tránh load đi load lại)
+            # Nếu đã có self.model thì dùng, không thì mới khởi tạo
+            if not hasattr(self, 'whisper_model') or self.whisper_model is None:
+                print("[DEBUG-WHISPER] Đang load model Whisper base (CPU)...")
+                self.whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
+            
+            # 3. THỰC HIỆN TRANSCRIBE
+            # beam_size=5 là chuẩn, vad_filter=True giúp lọc bớt đoạn im lặng/nhiễu
+            segments_gen, info = self.whisper_model.transcribe(
+                path_to_process, 
+                beam_size=5, 
+                language="vi",
+                vad_filter=True, # Lọc tiếng ồn/khoảng lặng
+                vad_parameters=dict(min_silence_duration_ms=500)
+            )
+            
+            # QUAN TRỌNG: Ép kiểu generator về list ngay lập tức để tránh lỗi index khi duyệt
+            segments = list(segments_gen)
             
             results = []
             for s in segments:
-                if len(s.text.strip()) > 1: # Bỏ qua âm thanh rác
+                # Làm sạch text
+                clean_text = s.text.strip()
+                
+                # Chỉ lấy các đoạn có nội dung thực sự (dài hơn 1 ký tự)
+                if len(clean_text) > 1:
                     results.append({
                         "start": round(s.start, 2),
                         "end": round(s.end, 2),
-                        "text": s.text.strip()
+                        "text": clean_text
                     })
+            
+            print(f"✅ Đã trích xuất thành công {len(results)} đoạn timeline.")
             return results
+
         except Exception as e:
-            print(f"❌ Lỗi Whisper: {e}")
+            # Nếu lỗi liên quan đến file, có thể do ffmpeg không đọc được codec
+            print(f"❌ Lỗi Whisper tại {path_to_process}: {str(e)}")
+            import traceback
+            traceback.print_exc() # In chi tiết lỗi ra console để debug
             return []
 
     def _call_ai_api(self, prompt):
@@ -148,133 +226,161 @@ class AIManager:
         print(f"✅ Đã bóc tách thành công {len(final_segments)} đoạn thoại sạch!")
         return final_segments
 
-    async def _make_audio_clips(self, script_segments):
-        """Tạo các đoạn audio từ kịch bản và khớp vào Timeline với logic Tăng tốc & Debug"""
-        # --- Import local để đảm bảo không lỗi thư viện ---       
 
-        VOICE = "vi-VN-Hoài MyNeural"
-        clips = []
-        temp_files = []
+    # async def _make_audio_clips(self, script_segments):
+       
+    #     nest_asyncio.apply()
+    #     VOICE = "vi-VN-NamMinhNeural" 
+    #     clips = []
+    #     temp_files = []
         
-        print(f"\n🚀 [DEBUG-TTS] BẮT ĐẦU TIẾN TRÌNH: {len(script_segments)} đoạn.")
+    #     print(f"\n🚀 [DEBUG-TTS] ĐANG KHỚP AUDIO VÀO TIMELINE...")
+
+    #     for i, seg in enumerate(script_segments):
+    #         text_to_read = self._clean_text(seg.get('text', '')).replace("e mail", "email")
+    #         if not text_to_read: continue
+                
+    #         tmp_path = os.path.join("workspace", f"seg_{i}_{int(time.time())}.mp3")
+            
+    #         try:
+    #             # 1. Gọi Microsoft tạo file
+    #             communicate = edge_tts.Communicate(text_to_read, VOICE)
+    #             await communicate.save(tmp_path)
+                
+    #             if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
+    #                 # 2. Nạp Clip
+    #                 a_clip = AudioFileClip(tmp_path)
+                    
+    #                 # 3. Tính toán Speed (Tăng tốc)
+    #                 duration_limit = float(seg['end']) - float(seg['start'])
+    #                 if a_clip.duration > duration_limit and duration_limit > 0:
+    #                     factor = min(a_clip.duration / duration_limit, 2.0)
+    #                     # SỬA LỖI .fx: Dùng cách gọi an toàn nhất
+    #                     a_clip = vfx.speedx(a_clip, factor) 
+    #                     print(f"⚡ Đoạn {i}: Tăng tốc x{factor:.2f}")
+                    
+    #                 # 4. SỬA LỖI .set_start: Dùng thuộc tính start trực tiếp hoặc set_start cũ
+    #                 # Cách này bao thầu mọi phiên bản MoviePy
+    #                 try:
+    #                     a_clip = a_clip.set_start(float(seg['start']))
+    #                 except AttributeError:
+    #                     a_clip.start = float(seg['start'])
+                        
+    #                 clips.append(a_clip)
+    #                 temp_files.append(tmp_path)
+    #                 print(f"✅ Đoạn {i}: ĐÃ KHỚP ({a_clip.duration:.2f}s)")
+    #             else:
+    #                 print(f"❌ Đoạn {i}: Lỗi file mp3.")
+    #         except Exception as e:
+    #             print(f"🧨 Lỗi xử lý MoviePy ở đoạn {i}: {e}")
+    #             continue
+
+        # return clips, temp_files
+    
+    async def _make_audio_clips(self, script_segments, voice_id=None):
+        nest_asyncio.apply()
+        
+        # Lấy giọng từ tham số, ưu tiên giọng người dùng chọn từ GUI
+        VOICE = voice_id if voice_id else "vi-VN-NamMinhNeural"
+        
+        audio_clips_list = []
+        temp_files = []
+        last_end_time = 0 
+
+        print(f"\n🚀 [DEBUG-TTS] ĐANG DÙNG GIỌNG: {VOICE}")
 
         for i, seg in enumerate(script_segments):
-            # 1. Làm sạch văn bản tuyệt đối bằng hàm đã tối ưu
-            text_to_read = self._clean_text(seg.get('text', ''))
+            text_to_read = self._clean_text(seg.get('text', '')).replace("e mail", "email")
+            if not text_to_read: continue
             
-            print(f"\n--- Đoạn {i} ---")
-            print(f"📝 Nội dung gửi đi: '{text_to_read}'")
-            print(f"⏱️ Khung giờ: {seg['start']}s -> {seg['end']}s")
-
-            # Bỏ qua nếu văn bản rỗng hoặc quá ngắn (tránh lỗi API)
-            if not text_to_read or len(text_to_read) < 2:
-                print(f"⏩ [SKIP] Bỏ qua đoạn {i} do văn bản không hợp lệ.")
-                continue
-                
-            start_time = float(seg['start'])
-            end_time = float(seg['end'])
-            duration_limit = end_time - start_time
-            
-            # Tạo file tạm trong thư mục workspace
-            tmp_path = os.path.join("workspace", f"seg_{i}_{int(time.time())}.mp3")
+            unique_name = f"seg_{i}_{uuid.uuid4().hex[:6]}.mp3"
+            tmp_path = os.path.join("workspace", unique_name)
             
             try:
-                # 2. VỆ SĨ: Nghỉ 0.6s để tránh bị Microsoft chặn (Rate Limit)
-                print(f"⏳ Đang chờ phản hồi từ Microsoft...")
-                await asyncio.sleep(0.6) 
-                
-                # 3. Gọi Edge-TTS tạo file audio
-                communicate = edge_tts.Communicate(text_to_read, VOICE)
+                # FIX TẠI ĐÂY: Bỏ pitch="-5Hz" để giọng không bị uốn éo
+                communicate = edge_tts.Communicate(text_to_read, VOICE, rate="+0%")
                 await communicate.save(tmp_path)
                 
-                # Kiểm tra kết quả lưu file
                 if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
-                    f_size = os.path.getsize(tmp_path)
-                    print(f"📊 Đã nhận Audio: {f_size} bytes")
-                    
-                    # 4. Nạp vào MoviePy để xử lý timeline
                     a_clip = AudioFileClip(tmp_path)
-                    original_duration = a_clip.duration
-                    print(f"🎵 Độ dài thực tế: {original_duration:.2f}s | Giới hạn clip: {duration_limit:.2f}s")
                     
-                    # 5. LOGIC KHỚP LỆNH: Nếu nói quá dài -> Tăng tốc giọng đọc
-                    if original_duration > duration_limit and duration_limit > 0:
-                        # Tính toán hệ số tốc độ (Ví dụ: cần 5s mà nói 7s -> tăng tốc x1.4)
-                        speed_factor = original_duration / duration_limit
-                        # Giới hạn tối đa x2.0 để nghe vẫn ra tiếng người
-                        speed_factor = min(speed_factor, 2.0) 
-                        
-                        # Sử dụng vfx để thay đổi tốc độ
-                        a_clip = a_clip.fx(vfx.speedx, speed_factor)
-                        print(f"⚡ [SPEEDUP] Đã ép tốc độ x{speed_factor:.2f} để kịp Timeline.")
+                    original_start = float(seg['start'])
+                    original_end = float(seg['end'])
                     
-                    # 6. Đặt mốc thời gian bắt đầu
-                    a_clip = a_clip.set_start(start_time)
+                    # Logic chống đè
+                    actual_start = max(original_start, last_end_time)
+                    drift = actual_start - original_start
                     
-                    clips.append(a_clip)
+                    # Ép tốc độ nhẹ nếu bị lệch quá nhiều
+                    if drift > 0.5:
+                        duration_limit = original_end - original_start
+                        if duration_limit > 0:
+                            factor = a_clip.duration / duration_limit
+                            a_clip = a_clip.fx(vfx.speedx, min(factor, 1.1))
+                    
+                    a_clip = a_clip.set_start(actual_start)
+                    last_end_time = actual_start + a_clip.duration
+                    
+                    audio_clips_list.append(a_clip)
                     temp_files.append(tmp_path)
-                    print(f"✅ Đoạn {i}: XỬ LÝ HOÀN TẤT.")
-                else:
-                    print(f"❌ [ERROR] Đoạn {i}: Microsoft trả về file rỗng hoặc không lưu được.")
-
+            
             except Exception as e:
-                # Bẫy lỗi chi tiết
-                error_msg = str(e)
-                print(f"🧨 [FATAL] Lỗi xử lý đoạn {i}: {type(e).__name__}")
-                if "NoAudioReceived" in error_msg:
-                    print("🚨 CẢNH BÁO: Không nhận được âm thanh. Hãy kiểm tra kết nối Internet!")
-                else:
-                    print(f"🔍 Chi tiết: {error_msg}")
+                print(f"🧨 Lỗi đoạn {i}: {e}")
                 continue
 
-        print(f"\n🎯 [DEBUG-TTS] TỔNG KẾT: Thành công {len(clips)}/{len(script_segments)} đoạn.")
-        
-        if not clips:
-            print("💀 [CRITICAL] Không tạo được bất kỳ đoạn audio nào. Vui lòng kiểm tra lại kịch bản hoặc mạng.")
-            
-        return clips, temp_files
+        return audio_clips_list, temp_files
     
-
-    def export_final_video(self, video_path, script_segments, output_path):
-        """Hợp nhất Video + Audio (Bản sửa lỗi No Audio Received)"""
+    def export_final_video(self, video_path, script_segments, output_path, voice_id=None):
+        """
+        voice_id: Nhận từ st.session_state.selected_voice_id truyền sang từ app.py
+        """
         try:
-            # Tạo event loop mới để chạy async trong thread của Streamlit
+            # Chạy async lấy danh sách clips - NHỚ TRUYỀN voice_id VÀO ĐÂY
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            audio_clips, temp_files = loop.run_until_complete(self._make_audio_clips(script_segments))
+            audio_clips, temp_files = loop.run_until_complete(
+                self._make_audio_clips(script_segments, voice_id=voice_id)
+            )
             loop.close()
 
-            if not audio_clips:
-                print("❌ Không có đoạn audio hợp lệ để lồng tiếng. Kiểm tra lại kịch bản!")
+            if not audio_clips: 
                 return False
 
-            print(f"[DEBUG-RENDER] Đang trộn {len(audio_clips)} đoạn thoại...")
+            print(f"🎬 [RENDER] Bắt đầu trộn tổng cộng {len(audio_clips)} đoạn thoại...")
+            
             with VideoFileClip(video_path) as video:
                 final_audio = CompositeAudioClip(audio_clips)
                 
-                # Fix lỗi thuộc tính tùy phiên bản MoviePy
-                if hasattr(video, "set_audio"):
-                    final_video = video.set_audio(final_audio)
-                else:
+                # Sử dụng các hàm mới nhất của MoviePy để tránh báo lỗi cũ (deprecated)
+                if hasattr(video, "with_audio"):
                     final_video = video.with_audio(final_audio)
+                else:
+                    final_video = video.set_audio(final_audio)
                 
-                # Giới hạn thời gian video bằng đúng thời gian video gốc (tránh bị dài ra vô tận)
-                final_video = final_video.set_duration(video.duration)
+                # Đảm bảo video không bị dài ra quá bản gốc
+                final_video = final_video.subclip(0, video.duration)
 
+                # Xuất video - preset='ultrafast' để Vũ đỡ phải chờ lâu
                 final_video.write_videofile(
                     output_path, 
                     codec="libx264", 
                     audio_codec="aac", 
-                    fps=24, 
-                    logger=None,
-                    temp_audiofile="workspace/temp-audio.m4a", # Tránh xung đột file audio
-                    remove_temp=True
+                    fps=24,
+                    preset="ultrafast" 
                 )
-            
-            # Dọn dẹp
-            for f in temp_files:
-                if os.path.exists(f): os.remove(f)
+                
+                # GIẢI PHÓNG BỘ NHỚ (Cực kỳ quan trọng để không bị lỗi file đang mở)
+                final_video.close()
+                final_audio.close()
+                for c in audio_clips: 
+                    c.close()
+                
+                # TÙY CHỌN: Xóa file tạm mp3 sau khi render xong cho sạch máy
+                for f in temp_files:
+                    try: os.remove(f)
+                    except: pass
+
             return True
         except Exception as e:
-            print(f"❌ Lỗi Render: {str(e)}")
+            print(f"❌ Lỗi: {e}")
             return False
