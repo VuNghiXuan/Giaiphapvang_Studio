@@ -76,7 +76,7 @@ with st.sidebar:
     VOICE_OPTIONS = {
         "Hoài My (Sang trọng)": "vi-VN-HoaiMyNeural",
         "Nam Minh (Trầm ấm)": "vi-VN-NamMinhNeural",
-        "Thành Lung (Trẻ trung)": "vi-VN-ThanhLungNeural"
+        # "Thành Lung (Trẻ trung)": "vi-VN-ThanhLungNeural"
     }
     
     selected_voice_label = st.selectbox("Giọng AI:", list(VOICE_OPTIONS.keys()))

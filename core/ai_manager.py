@@ -48,30 +48,6 @@ class AIManager:
         text = " ".join(text.split()).strip()
         return text
 
-    # def transcribe_with_segments(self, input_path):
-    #     """Bóc băng kèm mốc thời gian (Timestamp)"""
-    #     if not os.path.exists(input_path):
-    #         print(f"❌ Không tìm thấy file để bóc băng: {input_path}")
-    #         return []
-        
-    #     print(f"[DEBUG-WHISPER] Đang phân tích Timeline: {input_path}")
-    #     try:
-    #         # Dùng model base để tốc độ xử lý nhanh trên CPU
-    #         model = WhisperModel("base", device="cpu", compute_type="int8") 
-    #         segments, _ = model.transcribe(input_path, beam_size=5, language="vi")
-            
-    #         results = []
-    #         for s in segments:
-    #             if len(s.text.strip()) > 1: # Bỏ qua âm thanh rác
-    #                 results.append({
-    #                     "start": round(s.start, 2),
-    #                     "end": round(s.end, 2),
-    #                     "text": s.text.strip()
-    #                 })
-    #         return results
-    #     except Exception as e:
-    #         print(f"❌ Lỗi Whisper: {e}")
-    #         return []
 
     def transcribe_with_segments(self, input_path):
         """
@@ -226,56 +202,6 @@ class AIManager:
         print(f"✅ Đã bóc tách thành công {len(final_segments)} đoạn thoại sạch!")
         return final_segments
 
-
-    # async def _make_audio_clips(self, script_segments):
-       
-    #     nest_asyncio.apply()
-    #     VOICE = "vi-VN-NamMinhNeural" 
-    #     clips = []
-    #     temp_files = []
-        
-    #     print(f"\n🚀 [DEBUG-TTS] ĐANG KHỚP AUDIO VÀO TIMELINE...")
-
-    #     for i, seg in enumerate(script_segments):
-    #         text_to_read = self._clean_text(seg.get('text', '')).replace("e mail", "email")
-    #         if not text_to_read: continue
-                
-    #         tmp_path = os.path.join("workspace", f"seg_{i}_{int(time.time())}.mp3")
-            
-    #         try:
-    #             # 1. Gọi Microsoft tạo file
-    #             communicate = edge_tts.Communicate(text_to_read, VOICE)
-    #             await communicate.save(tmp_path)
-                
-    #             if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
-    #                 # 2. Nạp Clip
-    #                 a_clip = AudioFileClip(tmp_path)
-                    
-    #                 # 3. Tính toán Speed (Tăng tốc)
-    #                 duration_limit = float(seg['end']) - float(seg['start'])
-    #                 if a_clip.duration > duration_limit and duration_limit > 0:
-    #                     factor = min(a_clip.duration / duration_limit, 2.0)
-    #                     # SỬA LỖI .fx: Dùng cách gọi an toàn nhất
-    #                     a_clip = vfx.speedx(a_clip, factor) 
-    #                     print(f"⚡ Đoạn {i}: Tăng tốc x{factor:.2f}")
-                    
-    #                 # 4. SỬA LỖI .set_start: Dùng thuộc tính start trực tiếp hoặc set_start cũ
-    #                 # Cách này bao thầu mọi phiên bản MoviePy
-    #                 try:
-    #                     a_clip = a_clip.set_start(float(seg['start']))
-    #                 except AttributeError:
-    #                     a_clip.start = float(seg['start'])
-                        
-    #                 clips.append(a_clip)
-    #                 temp_files.append(tmp_path)
-    #                 print(f"✅ Đoạn {i}: ĐÃ KHỚP ({a_clip.duration:.2f}s)")
-    #             else:
-    #                 print(f"❌ Đoạn {i}: Lỗi file mp3.")
-    #         except Exception as e:
-    #             print(f"🧨 Lỗi xử lý MoviePy ở đoạn {i}: {e}")
-    #             continue
-
-        # return clips, temp_files
     
     async def _make_audio_clips(self, script_segments, voice_id=None):
         nest_asyncio.apply()
@@ -327,60 +253,97 @@ class AIManager:
             except Exception as e:
                 print(f"🧨 Lỗi đoạn {i}: {e}")
                 continue
-
         return audio_clips_list, temp_files
     
     def export_final_video(self, video_path, script_segments, output_path, voice_id=None):
         """
-        voice_id: Nhận từ st.session_state.selected_voice_id truyền sang từ app.py
+        Hàm trộn Video gốc + Audio AI theo đúng Timeline.
+        Vũ chú ý: voice_id truyền từ st.session_state.selected_voice_id vào đây.
         """
+        temp_audio_files = []
+        audio_clips = []
+        
         try:
-            # Chạy async lấy danh sách clips - NHỚ TRUYỀN voice_id VÀO ĐÂY
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            audio_clips, temp_files = loop.run_until_complete(
-                self._make_audio_clips(script_segments, voice_id=voice_id)
-            )
-            loop.close()
-
-            if not audio_clips: 
+            # 1. KIỂM TRA FILE GỐC (Tránh lỗi FileNotFoundError nãy mày gặp)
+            if not os.path.exists(video_path):
+                print(f"❌ Lỗi: File gốc '{video_path}' không tồn tại!")
                 return False
 
-            print(f"🎬 [RENDER] Bắt đầu trộn tổng cộng {len(audio_clips)} đoạn thoại...")
-            
+            # 2. TẠO AUDIO CLIPS (CHẠY ASYNC)
+            # Tao giả định mày đã có hàm _make_audio_clips trả về (clips, paths)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                audio_clips_raw, temp_audio_files = loop.run_until_complete(
+                    self._make_audio_clips(script_segments, voice_id=voice_id)
+                )
+            finally:
+                loop.close()
+
+            if not audio_clips_raw:
+                print("⚠️ Không có audio nào được tạo ra.")
+                return False
+
+            print(f"🎬 [RENDER] Bắt đầu trộn {len(audio_clips_raw)} đoạn thoại vào video...")
+
+            # 3. XỬ LÝ VIDEO & AUDIO CHÍNH
             with VideoFileClip(video_path) as video:
-                final_audio = CompositeAudioClip(audio_clips)
+                # Lấy FPS gốc của video để tránh lệch hình/tiếng
+                original_fps = video.fps if video.fps else 30
                 
-                # Sử dụng các hàm mới nhất của MoviePy để tránh báo lỗi cũ (deprecated)
+                # Gán thời điểm bắt đầu (start) cho từng đoạn audio theo kịch bản
+                # Đây là bước quan trọng nhất để KHỚP LỜI
+                final_clips_to_composite = []
+                for i, clip in enumerate(audio_clips_raw):
+                    start_time = script_segments[i].get('start', 0)
+                    # Ép audio bắt đầu đúng tại giây start_time trong timeline video
+                    positioned_clip = clip.set_start(start_time)
+                    final_clips_to_composite.append(positioned_clip)
+
+                # Trộn các đoạn audio thành một track duy nhất
+                final_audio = CompositeAudioClip(final_clips_to_composite)
+                
+                # Gắn audio vào video (Tương thích cả MoviePy cũ và mới)
                 if hasattr(video, "with_audio"):
                     final_video = video.with_audio(final_audio)
                 else:
                     final_video = video.set_audio(final_audio)
-                
-                # Đảm bảo video không bị dài ra quá bản gốc
+
+                # Cắt video đúng bằng độ dài gốc (tránh audio dài hơn làm video bị đen đoạn cuối)
                 final_video = final_video.subclip(0, video.duration)
 
-                # Xuất video - preset='ultrafast' để Vũ đỡ phải chờ lâu
+                # 4. XUẤT FILE THÀNH PHẨM
+                # preset='ultrafast' giúp render nhanh gấp 5 lần
+                # threads=4 tận dụng đa nhân CPU máy Vũ
                 final_video.write_videofile(
-                    output_path, 
-                    codec="libx264", 
-                    audio_codec="aac", 
-                    fps=24,
-                    preset="ultrafast" 
+                    output_path,
+                    codec="libx264",
+                    audio_codec="aac",
+                    fps=original_fps,
+                    preset="ultrafast",
+                    threads=4,
+                    logger=None # Tắt log rác của MoviePy cho sạch terminal
                 )
-                
-                # GIẢI PHÓNG BỘ NHỚ (Cực kỳ quan trọng để không bị lỗi file đang mở)
+
+                # 5. GIẢI PHÓNG TÀI NGUYÊN (Bắt buộc)
                 final_video.close()
                 final_audio.close()
-                for c in audio_clips: 
+                for c in audio_clips_raw:
                     c.close()
-                
-                # TÙY CHỌN: Xóa file tạm mp3 sau khi render xong cho sạch máy
-                for f in temp_files:
+
+            # 6. DỌN RÁC (Xóa file MP3 tạm)
+            for f in temp_audio_files:
+                if os.path.exists(f):
                     try: os.remove(f)
                     except: pass
 
+            print(f"✅ Đã xuất video thành công: {output_path}")
             return True
+
         except Exception as e:
-            print(f"❌ Lỗi: {e}")
+            print(f"❌ Lỗi nghiêm trọng khi Export: {e}")
+            # Đảm bảo dọn rác kể cả khi crash
+            for f in temp_audio_files:
+                try: os.remove(f)
+                except: pass
             return False
